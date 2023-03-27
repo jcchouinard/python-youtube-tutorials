@@ -3,3 +3,5 @@
 *.tsv
 *.json
 empty/
+*private.md*
+*python_how_long.md*
