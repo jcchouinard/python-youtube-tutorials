@@ -8,3 +8,4 @@ empty/
 *cpython*
 *.txt
 *.DS_STORE
+pending/

@@ -1,4 +1,4 @@
-# Repository of code used in my YouTube Python Tutorials
+# Repo of Code used in my YouTube Python Tutorials
 
 Python for Beginners
 
