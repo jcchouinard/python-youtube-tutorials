@@ -1,3 +1,10 @@
+# By: Jean-Christophe Chouinard
+# Full tutorial on https://www.jcchouinard.com/python-commoncrawl-extraction/
+# Linkedin: https://www.linkedin.com/in/jeanchristophechouinard/
+# YouTube: https://www.youtube.com/@jcchouinard
+# Twitter: https://x.com/ChouinardJC
+# Website: https://www.jcchouinard.com/
+
 import requests
 import json
 import os
