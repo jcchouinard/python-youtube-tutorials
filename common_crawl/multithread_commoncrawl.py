@@ -21,6 +21,77 @@ with open('commoncrawl_index_names_2024-08-29.txt', 'r') as f:
 
 
 
+
+def cc_records_to_pkl(df, pickle_file):
+    processed_indices = load_processed_indices(pickle_file)
+    if processed_indices:
+        # Remove processed items
+        df = df[~df['index'].isin(processed_indices)]
+
+    # Create storage for later
+    successful = set()
+    results = {}
+
+    # Keep track of each row processed
+    i = 0 
+    perc = 0
+    n_records = len(df)
+    print(f"Found {n_records} records for {target_url}")
+    mod = int(n_records * 0.01)
+
+    # Reset index to help with looping
+    df.reset_index(drop=True,inplace=True)
+
+
+    for i in range(len(df)):
+        # Print every 1% process
+        if i % mod == 0: 
+            print(f'{i} of {n_records}: {perc}%')
+            perc += 1
+
+        record_url = df.loc[i, 'url']
+
+        # Fetch only URLs that were not processed
+        # If it was already processed, skip URL 
+        # (Helps speeding if you only need one version of the HTML, not its history)
+        if not record_url in successful:
+            length = int(df.loc[i, 'length'])
+            offset = int(df.loc[i, 'offset'])
+            warc_record_filename = df.loc[i, 'filename']
+            result = fetch_single_record(warc_record_filename, offset, length)
+            
+            if not result:
+                df.loc[i,'success_status'] = 'invalid warc'
+            else:
+                df.loc[i,'success_status'] = 'success'
+                df.loc[i,'html'] = result
+        else: 
+            df.loc[i,'success_status'] = 'previously processed'
+
+        # Add to pickle file
+        append_df_row_to_pickle(df.loc[i, :], pickle_file)
+    return df
+
+
+def threaded_cc_records_to_pkl(df, n_threads):
+    threads = []
+    for i in range(n_threads):
+        pickle_file = f'data/commcrawl_expedia_hotel_information_th{i}.pkl'
+        thread_df = df[df.index % n_threads == i]
+        try:
+            t = threading.Thread(
+                        target=cc_records_to_pkl, 
+                        args=[thread_df, pickle_file])
+            t.start()
+        except:
+            pass
+        threads.append(t)
+
+    for thread in threads:
+        thread.join()
+    return threads
+
+
 def search_cc_index(url, index_name):
     """
     Search the Common Crawl Index for a given URL.
@@ -112,6 +183,43 @@ def append_df_row_to_pickle(row, pickle_file):
     df.to_pickle(pickle_file)
 
 
+
+def append_df_row_to_pickle(row, pickle_file):
+    """
+    Append a row to a DataFrame stored in a pickle file using a checkpoint mechanism to prevent overwriting if it breaks.
+    
+    Arguments:
+        row {pd.Series} -- The row to be appended to the DataFrame.
+        pickle_file {str} -- The path to the pickle file where the DataFrame is stored.
+    """
+    checkpoint_file = pickle_file + '.checkpoint'  # Temporary checkpoint file
+
+    # Load the existing DataFrame from the pickle file or create a new DataFrame if the file does not exist
+    if os.path.exists(pickle_file):
+        try:
+            df = pd.read_pickle(pickle_file)
+        except Exception as e:
+            print(f"Error loading {pickle_file}: {e}")
+            return  # Exit if there is an issue loading the original file
+    else:
+        df = pd.DataFrame(columns=row.index)
+
+    # Append the new row to the DataFrame
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+    # Save the updated DataFrame to a checkpoint file first
+    try:
+        df.to_pickle(checkpoint_file)
+        # print(f"Checkpoint saved to {checkpoint_file}")
+
+        # If checkpoint is saved successfully, rename the checkpoint to the original pickle file
+        os.replace(checkpoint_file, pickle_file)
+        # print(f"Data appended to {pickle_file} successfully.")
+    except Exception as e:
+        print(f"Error saving checkpoint: {e}")
+        # If there is an error, leave the checkpoint file intact and do not overwrite the original file
+
+
 def load_processed_indices(pickle_file):
     """
     Load processed indices from a pickle file to check previously processed records.
@@ -150,55 +258,6 @@ def loop_records(target_url, indexes):
     all_records_df = all_records_df.reset_index()
     return all_records_df
 
-def cc_records_to_pkl(df, pickle_file):
-    processed_indices = load_processed_indices(pickle_file)
-    if processed_indices:
-        # Remove processed items
-        df = df[~df['index'].isin(processed_indices)]
-
-    # Create storage for later
-    successful = set()
-    results = {}
-
-    # Keep track of each row processed
-    i = 0 
-    perc = 0
-    n_records = len(df)
-    print(f"Found {n_records} records for {target_url}")
-    mod = int(n_records * 0.01)
-
-    # Reset index to help with looping
-    df.reset_index(drop=True,inplace=True)
-
-
-    for i in range(len(df)):
-        # Print every 1% process
-        if i % mod == 0: 
-            print(f'{i} of {n_records}: {perc}%')
-            perc += 1
-
-        record_url = df.loc[i, 'url']
-
-        # Fetch only URLs that were not processed
-        # If it was already processed, skip URL 
-        # (Helps speeding if you only need one version of the HTML, not its history)
-        if not record_url in successful:
-            length = int(df.loc[i, 'length'])
-            offset = int(df.loc[i, 'offset'])
-            warc_record_filename = df.loc[i, 'filename']
-            result = fetch_single_record(warc_record_filename, offset, length)
-            
-            if not result:
-                df.loc[i,'success_status'] = 'invalid warc'
-            else:
-                df.loc[i,'success_status'] = 'success'
-                df.loc[i,'html'] = result
-        else: 
-            df.loc[i,'success_status'] = 'previously processed'
-
-        # Add to pickle file
-        append_df_row_to_pickle(df.loc[i, :], pickle_file)
-    return df
 
 all_records_df = loop_records(target_url, indexes)
 # Create columns where to store data later
@@ -210,16 +269,4 @@ df = df[df['url'].str.contains('/job/')]
 df.head()
 
 
-n_threads = 10
-threads = []
-for i in range(n_threads):
-    pickle_file = f'data/indeed_job_information_th{i}.pkl'
-    thread_df = df[df.index % n_threads == i]
-    t = threading.Thread(
-                target=cc_records_to_pkl, 
-                args=[thread_df, pickle_file])
-    t.start()
-    threads.append(t)
-
-for thread in threads:
-    thread.join()
+threads = threaded_cc_records_to_pkl(df, 10)
