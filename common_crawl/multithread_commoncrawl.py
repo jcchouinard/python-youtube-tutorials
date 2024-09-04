@@ -350,7 +350,7 @@ def loop_records(target_url, indexes):
     return all_records_df
 
 current_dir = os.getcwd()
-storage_dir = current_dir = '/data'
+storage_dir = current_dir + '/data'
 if not os.path.isdir(storage_dir):
     os.makedirs(storage_dir)
 
