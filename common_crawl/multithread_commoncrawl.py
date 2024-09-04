@@ -1,28 +1,69 @@
-import requests
+import gc  
 import json
 import os
-import pandas as pd
-# For parsing URLs:
-from urllib.parse import quote_plus
-from  bs4 import BeautifulSoup
-import threading
+import time
 import warnings
-warnings.simplefilter(action='ignore', category=FutureWarning)
-# For parsing WARC records:
+from urllib.parse import quote_plus
+
+import pandas as pd
+import psutil  # New import for memory usage monitoring
+import requests
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
 from warcio.archiveiterator import ArchiveIterator
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 # The URL you want to look up in the Common Crawl index
 target_url = 'indeed.com/.*'  # Replace with your target URL
 
-# list of indexes https://commoncrawl.org/get-started
+# List of indexes
 with open('commoncrawl_index_names_2024-08-29.txt', 'r') as f:
-    indexes = f.read().split('\n')
+    indexes = f.read().strip().split('\n')
 
 
+def check_memory_and_pause(threshold=80, resume_threshold=60, max_wait_time=500):
+    """
+    Check the current memory usage and pause execution if it exceeds the defined threshold.
+    Resume execution only when memory usage drops below the resume threshold.
+    """
+    memory = psutil.virtual_memory()
+    
+    # If memory usage is above the threshold, start pausing
+    if memory.percent > threshold:
+        print(f"Memory usage is at {memory.percent}%. Pausing execution to free up memory...")
+        
+        # Set up a counter for maximum wait time
+        total_wait_time = 0
+        
+        # Loop until memory usage drops below the resume threshold or max wait time is reached
+        while memory.percent > resume_threshold and total_wait_time <= max_wait_time:
+            time.sleep(1)  # Wait for 1 second
+            total_wait_time += 1
+            memory = psutil.virtual_memory()  # Refresh memory usage stats
+
+        # Check if maximum wait time was reached
+        if total_wait_time > max_wait_time:
+            print(f"Memory usage still high after waiting {max_wait_time} seconds.")
+        else:
+            print(f"Memory usage dropped to {memory.percent}%. Resuming execution...")
+    else:
+        pass
+        #print(f"Memory usage is at {memory.percent}%. Continuing execution.")
 
 
 def cc_records_to_pkl(df, pickle_file):
+    """
+    Processes records from a DataFrame and saves the processed records to a pickle file.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing records to process.
+        pickle_file (str): The path to the pickle file where processed records will be stored.
+
+    Returns:
+        str: Returns 'Done' after processing all records.
+    """
     processed_indices = load_processed_indices(pickle_file)
     if processed_indices:
         # Remove processed items
@@ -30,30 +71,27 @@ def cc_records_to_pkl(df, pickle_file):
 
     # Create storage for later
     successful = set()
-    results = {}
 
     # Keep track of each row processed
     i = 0 
     perc = 0
     n_records = len(df)
-    print(f"Found {n_records} records for {target_url}")
     mod = int(n_records * 0.01)
 
     # Reset index to help with looping
     df.reset_index(drop=True,inplace=True)
-
-
+    
     for i in range(len(df)):
-        # Print every 1% process
+        # Check memory usage and pause if necessary
+        # check_memory_and_pause()
+
+        # Print progress every 1% of records processed
         if i % mod == 0: 
-            print(f'{i} of {n_records}: {perc}%')
             perc += 1
 
         record_url = df.loc[i, 'url']
 
         # Fetch only URLs that were not processed
-        # If it was already processed, skip URL 
-        # (Helps speeding if you only need one version of the HTML, not its history)
         if not record_url in successful:
             length = int(df.loc[i, 'length'])
             offset = int(df.loc[i, 'offset'])
@@ -61,36 +99,79 @@ def cc_records_to_pkl(df, pickle_file):
             result = fetch_single_record(warc_record_filename, offset, length)
             
             if not result:
-                df.loc[i,'success_status'] = 'invalid warc'
+                df.loc[i, 'success_status'] = 'invalid warc'
             else:
-                df.loc[i,'success_status'] = 'success'
-                df.loc[i,'html'] = result
+                df.loc[i, 'success_status'] = 'success'
+                title, body, description, meta_robots, canonical, head = get_html_tags(result)
+                df.loc[i, 'title'] = str(title)
+                df.loc[i, 'body'] = str(body)
+                df.loc[i, 'description'] = str(description)
+                df.loc[i, 'meta_robots'] = str(meta_robots)
+                df.loc[i, 'canonical'] = str(canonical)
+                df.loc[i, 'head'] = str(head)
         else: 
-            df.loc[i,'success_status'] = 'previously processed'
+            df.loc[i, 'success_status'] = 'previously processed'
 
         # Add to pickle file
         append_df_row_to_pickle(df.loc[i, :], pickle_file)
-    return df
+    
+    del df
+    gc.collect()
+    return 'Done'
 
 
-def threaded_cc_records_to_pkl(df, n_threads):
-    threads = []
-    for i in range(n_threads):
-        pickle_file = f'data/commcrawl_expedia_hotel_information_th{i}.pkl'
-        thread_df = df[df.index % n_threads == i]
-        try:
-            t = threading.Thread(
-                        target=cc_records_to_pkl, 
-                        args=[thread_df, pickle_file])
-            t.start()
-        except:
-            pass
-        threads.append(t)
+def threaded_cc_records_to_pkl(df, max_workers=10):
+    """
+    Processes records from a DataFrame using a thread pool executor and saves the processed records to separate pickle files.
 
-    for thread in threads:
-        thread.join()
-    return threads
+    Args:
+        df (pd.DataFrame): The DataFrame containing records to process.
+        max_workers (int): The maximum number of worker threads to use. Default is 10.
 
+    Returns:
+        None
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for i in range(max_workers):
+            pickle_file = f'data/commcrawl_expedia_hotel_information_th{i}.pkl'
+            thread_df = df[df.index % max_workers == i]
+            future = executor.submit(cc_records_to_pkl, thread_df, pickle_file)
+            futures.append(future)
+
+        # Wait for all threads to complete
+        for future in futures:
+            future.result()
+    del df
+    gc.collect()
+
+
+def get_html_tags(html):
+    """
+    Extracts HTML tags such as title, body, description, meta robots, canonical link, and head from a given HTML string.
+
+    Args:
+        html (str): The HTML content to parse.
+
+    Returns:
+        tuple: A tuple containing extracted HTML tags (title, body, description, meta_robots, canonical, head).
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    for script in soup.find_all('script'):
+        script.decompose()
+    title = soup.find('title')
+    body = soup.find('body')
+    title = title.text if title else 'not_defined'
+    body = body if body else 'not_defined'
+    head = soup.find('head')
+    head = head if head else 'not_defined'
+    description = soup.find('meta', attrs={'name':'description'})
+    meta_robots =  soup.find('meta', attrs={'name':'robots'})
+    canonical = soup.find('link', {'rel': 'canonical'})
+    description = description['content'] if description else 'not_defined'
+    meta_robots =  meta_robots['content'] if meta_robots else 'not_defined'
+    canonical = canonical['href'] if canonical else 'not_defined'
+    return title, body, description, meta_robots, canonical, head
 
 def search_cc_index(url, index_name):
     """
@@ -234,20 +315,29 @@ def load_processed_indices(pickle_file):
         df = pd.read_pickle(pickle_file)
         # Assuming 'index' column is in the DataFrame and contains indices of processed records
         processed_indices = set(df['index'].unique())
-        print(f"Loaded {len(processed_indices)} processed indices from {pickle_file}")
+        # print(f"Loaded {len(processed_indices)} processed indices from {pickle_file}")
         return processed_indices
     else:
-        print(f"No processed indices found. Pickle file '{pickle_file}' does not exist.")
+        # print(f"No processed indices found. Pickle file '{pickle_file}' does not exist.")
         return set()
 
 def loop_records(target_url, indexes):
+    """
+    Fetches records from multiple Common Crawl indexes for a given URL and combines them into a single DataFrame.
 
+    Args:
+        target_url (str): The URL to search for in the Common Crawl indexes.
+        indexes (list): A list of index names to search.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing all the fetched records from the specified indexes, sorted by index name.
+    """
     record_dfs = []
 
-    # Fetch each index and store into a datafram
+    # Fetch each index and store into a dataframe
     for index_name in indexes:
         print('Running: ', index_name)
-        records = search_cc_index(target_url,index_name)
+        records = search_cc_index(target_url, index_name)
         record_df = pd.DataFrame(records)
         record_df['index_name'] = index_name
         record_dfs.append(record_df)
@@ -256,17 +346,25 @@ def loop_records(target_url, indexes):
     all_records_df = pd.concat(record_dfs)
     all_records_df = all_records_df.sort_values(by='index_name', ascending=False)
     all_records_df = all_records_df.reset_index()
+    
     return all_records_df
+
 
 
 all_records_df = loop_records(target_url, indexes)
 # Create columns where to store data later
 all_records_df['success_status'] = 'not processed'
-all_records_df['html'] = ''
+all_records_df['title'] = 'not_defined'
+all_records_df['body'] = 'not_defined'
+all_records_df['description'] = 'not_defined'
+all_records_df['meta_robots'] = 'not_defined'
+all_records_df['canonical'] = 'not_defined'
+all_records_df['head'] = 'not_defined'
+
 
 df = all_records_df[all_records_df['languages'] == 'eng']
 df = df[df['url'].str.contains('/job/')]
 df.head()
 
 
-threads = threaded_cc_records_to_pkl(df, 10)
+threads = threaded_cc_records_to_pkl(df, max_workers=10)
