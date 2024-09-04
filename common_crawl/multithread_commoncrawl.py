@@ -349,8 +349,8 @@ def loop_records(target_url, indexes):
     
     return all_records_df
 
-
-storage_dir = '/Users/jchouinard/Documents/github_data/python-youtube-tutorials/common_crawl/data'
+current_dir = os.getcwd()
+storage_dir = current_dir = '/data'
 if not os.path.isdir(storage_dir):
     os.makedirs(storage_dir)
 
