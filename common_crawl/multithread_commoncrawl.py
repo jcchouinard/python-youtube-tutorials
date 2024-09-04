@@ -22,7 +22,7 @@ target_url = 'indeed.com/.*'  # Replace with your target URL
 with open('commoncrawl_index_names_2024-08-29.txt', 'r') as f:
     indexes = f.read().strip().split('\n')
 
-
+indexes = indexes[:2]
 def check_memory_and_pause(threshold=80, resume_threshold=60, max_wait_time=500):
     """
     Check the current memory usage and pause execution if it exceeds the defined threshold.
@@ -134,7 +134,7 @@ def threaded_cc_records_to_pkl(df, max_workers=10):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for i in range(max_workers):
-            pickle_file = f'data/commcrawl_expedia_hotel_information_th{i}.pkl'
+            pickle_file = f'data/commcrawl_th{i}.pkl'
             thread_df = df[df.index % max_workers == i]
             future = executor.submit(cc_records_to_pkl, thread_df, pickle_file)
             futures.append(future)
@@ -350,6 +350,9 @@ def loop_records(target_url, indexes):
     return all_records_df
 
 
+storage_dir = '/Users/jchouinard/Documents/github_data/python-youtube-tutorials/common_crawl/data'
+if not os.path.isdir(storage_dir):
+    os.makedirs(storage_dir)
 
 all_records_df = loop_records(target_url, indexes)
 # Create columns where to store data later
@@ -367,4 +370,4 @@ df = df[df['url'].str.contains('/job/')]
 df.head()
 
 
-threads = threaded_cc_records_to_pkl(df, max_workers=10)
+threaded_cc_records_to_pkl(df, max_workers=10)
