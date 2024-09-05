@@ -23,7 +23,9 @@ with open('commoncrawl_index_names_2024-08-29.txt', 'r') as f:
     indexes = f.read().strip().split('\n')
 
 indexes = indexes[:2]
-def check_memory_and_pause(threshold=80, resume_threshold=60, max_wait_time=500):
+
+
+def check_memory_and_pause(threshold=90, resume_threshold=60, max_wait_time=500):
     """
     Check the current memory usage and pause execution if it exceeds the defined threshold.
     Resume execution only when memory usage drops below the resume threshold.
@@ -53,18 +55,20 @@ def check_memory_and_pause(threshold=80, resume_threshold=60, max_wait_time=500)
         #print(f"Memory usage is at {memory.percent}%. Continuing execution.")
 
 
-def cc_records_to_pkl(df, pickle_file):
+def cc_records_to_pkl(df, pickle_file, processed_file='processed.txt'):
     """
     Processes records from a DataFrame and saves the processed records to a pickle file.
 
     Args:
         df (pd.DataFrame): The DataFrame containing records to process.
         pickle_file (str): The path to the pickle file where processed records will be stored.
+        processed_file (str): The path to the text file where processed indices will be stored.
 
     Returns:
         str: Returns 'Done' after processing all records.
     """
-    processed_indices = load_processed_indices(pickle_file)
+    # Load processed indices from text file
+    processed_indices = load_processed_indices_from_text(processed_file)
     if processed_indices:
         # Remove processed items
         df = df[~df['index'].isin(processed_indices)]
@@ -73,31 +77,32 @@ def cc_records_to_pkl(df, pickle_file):
     successful = set()
 
     # Keep track of each row processed
-    i = 0 
+    i = 0
     perc = 0
     n_records = len(df)
-    mod = int(n_records * 0.01)
+    mod = int(n_records * 0.10)
 
     # Reset index to help with looping
-    df.reset_index(drop=True,inplace=True)
-    
+    df.reset_index(drop=True, inplace=True)
+
     for i in range(len(df)):
         # Check memory usage and pause if necessary
         # check_memory_and_pause()
 
         # Print progress every 1% of records processed
-        if i % mod == 0: 
+        if i % mod == 0:
+            print(f'Progress: {i*10}%')
             perc += 1
 
         record_url = df.loc[i, 'url']
 
         # Fetch only URLs that were not processed
-        if not record_url in successful:
+        if record_url not in successful:
             length = int(df.loc[i, 'length'])
             offset = int(df.loc[i, 'offset'])
             warc_record_filename = df.loc[i, 'filename']
             result = fetch_single_record(warc_record_filename, offset, length)
-            
+
             if not result:
                 df.loc[i, 'success_status'] = 'invalid warc'
             else:
@@ -109,15 +114,49 @@ def cc_records_to_pkl(df, pickle_file):
                 df.loc[i, 'meta_robots'] = str(meta_robots)
                 df.loc[i, 'canonical'] = str(canonical)
                 df.loc[i, 'head'] = str(head)
-        else: 
+        else:
             df.loc[i, 'success_status'] = 'previously processed'
 
         # Add to pickle file
         append_df_row_to_pickle(df.loc[i, :], pickle_file)
+        
+        # Add processed index to the text file
+        add_processed_index_to_text(df.loc[i, 'index'], processed_file)
     
     del df
     gc.collect()
     return 'Done'
+
+def load_processed_indices_from_text(processed_file):
+    """
+    Load processed indices from a text file to check previously processed records.
+
+    Args:
+        processed_file (str): The path to the text file where processed indices are stored.
+
+    Returns:
+        Set of processed indices.
+    """
+    if os.path.exists(processed_file):
+        with open(processed_file, 'r') as f:
+            processed_indices = set(line.strip() for line in f)
+        print(f"Loaded {len(processed_indices)} processed indices from {processed_file}")
+        return processed_indices
+    else:
+        print(f"No processed indices found. Text file '{processed_file}' does not exist.")
+        return set()
+
+def add_processed_index_to_text(index, processed_file):
+    """
+    Append a processed index to a text file.
+
+    Args:
+        index (str): The index to be added to the processed file.
+        processed_file (str): The path to the text file where processed indices are stored.
+    """
+    with open(processed_file, 'a') as f:
+        f.write(f"{index}\n")
+    print(f"Added index {index} to {processed_file}")
 
 
 def threaded_cc_records_to_pkl(df, max_workers=10):
@@ -301,25 +340,6 @@ def append_df_row_to_pickle(row, pickle_file):
         # If there is an error, leave the checkpoint file intact and do not overwrite the original file
 
 
-def load_processed_indices(pickle_file):
-    """
-    Load processed indices from a pickle file to check previously processed records.
-
-    Arguments:
-        pickle_file {str} -- The path to the pickle file where the DataFrame is stored.
-    
-    Returns:
-        Set of processed indices.
-    """
-    if os.path.exists(pickle_file):
-        df = pd.read_pickle(pickle_file)
-        # Assuming 'index' column is in the DataFrame and contains indices of processed records
-        processed_indices = set(df['index'].unique())
-        # print(f"Loaded {len(processed_indices)} processed indices from {pickle_file}")
-        return processed_indices
-    else:
-        # print(f"No processed indices found. Pickle file '{pickle_file}' does not exist.")
-        return set()
 
 def loop_records(target_url, indexes):
     """
@@ -370,4 +390,4 @@ df = df[df['url'].str.contains('/job/')]
 df.head()
 
 
-threaded_cc_records_to_pkl(df, max_workers=10)
+threaded_cc_records_to_pkl(df, max_workers=100)
