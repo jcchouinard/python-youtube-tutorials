@@ -9,3 +9,4 @@ empty/
 *.txt
 *.DS_STORE
 pending/
+*template.ipynb
